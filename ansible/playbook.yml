@@ -24,6 +24,12 @@
         fstype: ext4
         state: mounted
 
+    - name: Create /etc/docker directory
+      become: true
+      file:
+        dest: /etc/docker/
+        state: directory
+
     - name: Create docker daemon config
       become: true
       template:
