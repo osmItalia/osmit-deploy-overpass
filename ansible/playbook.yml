@@ -93,18 +93,18 @@
         src: overpass
         dest: /opt
 
-    # - name: Start import
-    #   become: true
-    #   community.docker.docker_compose_v2:
-    #     project_src: /opt/overpass
-    #     services: import
-    #     wait: true
-    #   register: output
+    - name: Start import
+      become: true
+      community.docker.docker_compose_v2:
+        project_src: /opt/overpass
+        services: import
+        wait: true
+      register: output
 
-    # - name: Start api
-    #   become: true
-    #   community.docker.docker_compose_v2:
-    #     project_src: /opt/overpass
-    #     services: api
-    #     wait: true
-    #   register: output
+    - name: Start api
+      become: true
+      community.docker.docker_compose_v2:
+        project_src: /opt/overpass
+        services: api
+        wait: true
+      register: output
