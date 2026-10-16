@@ -1,6 +1,6 @@
 services:
   import:
-    image: b1tw153/overpass-api:latest
+    image: b1tw153/overpass-api@sha256:b5b458688c20844630caea4b81f619545ddbc0a1f771ee42b82f3a1fff2a6188
     entrypoint:
       - /opt/overpass/bin/import_osm_data.sh
       - --diff-url=https://download.openstreetmap.fr/replication/europe/italy/minute
@@ -19,7 +19,7 @@ services:
     restart: "no"
 
   api:
-    image: b1tw153/overpass-api:latest
+    image: b1tw153/overpass-api@sha256:b5b458688c20844630caea4b81f619545ddbc0a1f771ee42b82f3a1fff2a6188
     environment:
       OVERPASS_DB_DIR: /opt/overpass/db
       EXTRACT_FILE_URL: https://download.openstreetmap.fr/extracts/europe/italy-latest.osm.pbf
