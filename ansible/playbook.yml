@@ -1,0 +1,104 @@
+- name: Install overpass instance
+  hosts: all
+
+  tasks:
+    - name: Format second disk
+      become: true
+      community.general.filesystem:
+        fstype: ext4
+        dev: /dev/sdb
+
+    - name: Add new drive to fstab
+      become: true
+      ansible.posix.mount:
+        path: /opt/docker
+        src: /dev/sdb
+        fstype: ext4
+        state: present
+
+    - name: Mount new drive
+      become: true
+      ansible.posix.mount:
+        path: /opt/docker
+        src: /dev/sdb
+        fstype: ext4
+        state: mounted
+
+    - name: Create docker daemon config
+      become: true
+      template:
+        src: daemon.json.j2
+        dest: /etc/docker/daemon.json
+        mode: "0644"
+      vars:
+        docker_root: /opt/docker
+
+    - name: Ensure dependencies are installed
+      become: true
+      ansible.builtin.package:
+        name:
+          - ca-certificates
+        state: present
+
+    - name: Download Docker GPG key
+      become: true
+      get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: "0644"
+        force: true
+
+    - name: Add Docker repository to Apt sources
+      become: true
+      ansible.builtin.deb822_repository:
+        name: docker
+        types: deb
+        uris: https://download.docker.com/linux/debian
+        suites: '{{ ansible_facts["distribution_release"] }}'
+        components:
+          - stable
+        signed_by: https://download.docker.com/linux/debian/gpg
+
+    - name: Update apt cache after adding Docker repository
+      become: true
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Install Docker and Docker Compose
+      become: true
+      ansible.builtin.package:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+
+    - name: Ensure Docker service is enabled and restarted
+      become: true
+      ansible.builtin.service:
+        name: docker
+        state: restarted
+        enabled: yes
+
+    - name: Copy docker-compose overpass
+      become: true
+      copy:
+        src: overpass
+        dest: /opt
+
+    # - name: Start import
+    #   become: true
+    #   community.docker.docker_compose_v2:
+    #     project_src: /opt/overpass
+    #     services: import
+    #     wait: true
+    #   register: output
+
+    # - name: Start api
+    #   become: true
+    #   community.docker.docker_compose_v2:
+    #     project_src: /opt/overpass
+    #     services: api
+    #     wait: true
+    #   register: output
