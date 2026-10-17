@@ -36,7 +36,7 @@ Unfortunately many steps are still manual, please follow all steps carefully. If
 
 Unfortunately, deploying infrastructure is not enough. We need to deploy the actual application.
 
-1. Get your instance name via `prod-osmit-overpass-44f8dc1.osmit.eqiad1.wikimedia.cloud`;
+1. Get your instance name via `pulumi stack output instance-host`;
 2. Change directory to `cd ./ansible/`
 3. Generate yourself an `inventory.yaml` as follows:
    ```yaml
