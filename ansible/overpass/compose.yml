@@ -28,6 +28,7 @@ services:
       OVERPASS_AREAS: yes
       OVERPASS_META_MODE: yes
       OVERPASS_REPLICATE_ID: auto
+      NGINX_CLIENT_CONN_LIMIT: 30
     ports:
       - "80:8080"
     volumes:
