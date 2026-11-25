@@ -33,6 +33,7 @@ services:
       - "80:8080"
     volumes:
       - database:/opt/overpass/db
+    restart: "unless-stopped"
 
 volumes:
   database:
