@@ -3,6 +3,10 @@ pid /opt/overpass/run/nginx.pid;
 error_log /opt/overpass/log/nginx_error.log;
 include /etc/nginx/modules-enabled/*.conf;
 
+# JIT-compile regexes (User-Agent classification runs on every request).
+# Off by default in nginx; this build supports it (--with-pcre-jit).
+pcre_jit on;
+
 events {
     worker_connections 768;
 }
@@ -24,7 +28,9 @@ http {
                               '"$http_referer" "$http_user_agent" '
                               '$request_time $upstream_response_time';
 
-    access_log /opt/overpass/log/nginx_access.log combined_timed;
+    # Buffered: one write() per 64k of log lines (or every 5s) instead of one per
+    # request, which matters when flooded with (rejected) requests.
+    access_log /opt/overpass/log/nginx_access.log combined_timed buffer=64k flush=5s;
 
     client_body_temp_path /opt/overpass/tmp;
     fastcgi_temp_path     /opt/overpass/tmp;
@@ -50,12 +56,42 @@ http {
     # 3. Whitelisted (non-browser) agents skip the Referer check.
     # Requests from inside the container (loopback) are always allowed so the
     # image's own healthcheck (curl http://localhost:8080/api/status) works.
+    #
+    # Cost per request: one radix-tree lookup (geo), at most one JIT-compiled
+    # regex run (User-Agent) and two hash lookups. nginx variables are lazy,
+    # so the maps only run when $deny_request is read, and a chained map only
+    # evaluates the branch it picks.
     # ------------------------------------------------------------------------
 
-    # Classify the client from its User-Agent. Regexes are tested in the order
-    # they appear and the first match wins, so the user whitelist (included
-    # first) takes precedence over the generic browser detection below.
-    # An empty or unknown User-Agent falls through to "deny".
+    # Entry point. Loopback short-circuits: nothing else is evaluated.
+    geo $is_loopback {
+        default      0;
+        127.0.0.1/32 1;
+        ::1/128      1;
+    }
+
+    map $is_loopback $deny_request {
+        1       0;
+        default $deny_by_client;
+    }
+
+    # Exact-string keys only -> hash lookup, no regex.
+    map "$client_class:$has_referer" $deny_by_client {
+        default   1;
+        allowed:0 0; # whitelisted agent, Referer not required
+        allowed:1 0;
+        browser:1 0; # browser with a non-empty Referer
+    }
+
+    map $http_referer $has_referer {
+        ""      0;
+        default 1;
+    }
+
+    # Classify the client from its User-Agent. Exact strings are hash lookups
+    # and always win; regexes are then tested in order, first match wins, so
+    # the user whitelist (included first) takes precedence over the generic
+    # browser detection below. Empty or unknown User-Agent -> "deny".
     #
     # The whitelist directory is baked into the image with defaults and is
     # bind-mounted by compose.yml, so it can be edited live: after a change run
@@ -65,25 +101,12 @@ http {
 
         include /etc/nginx/user-agents/*.conf;
 
-        # Loose detection of major browsers via their product tokens:
-        # Firefox, Chrome/Chromium (and iOS variants), Safari, Edge (all
-        # variants), Opera, Samsung Internet, Vivaldi, Yandex, legacy IE.
-        "~*(firefox|fxios|chrome|chromium|crios|safari|edg|edge|edga|edgios|opr|opera|samsungbrowser|vivaldi|yabrowser)/" browser;
-        "~*(trident/|msie )" browser;
-    }
-
-    geo $is_loopback {
-        default      0;
-        127.0.0.1/32 1;
-        ::1/128      1;
-    }
-
-    # Final decision, key is "<loopback>:<class>:<referer>".
-    map "$is_loopback:$client_class:$http_referer" $deny_request {
-        default          1;
-        "~^1:"           0; # in-container request (healthcheck)
-        "~^0:allowed:"   0; # whitelisted agent, Referer not required
-        "~^0:browser:.+" 0; # browser with a non-empty Referer
+        # Loose detection of major browsers with one case-sensitive regex.
+        # Every Chromium/WebKit browser (Chrome, Edge, Opera, Brave, Vivaldi,
+        # Samsung Internet, Yandex, iOS CriOS/FxiOS, ...) also sends "Chrome/"
+        # and/or "Safari/"; Gecko sends "Firefox/"; IE 8-11 sends "Trident/";
+        # old Presto Opera sends "Opera/".
+        "~(?:Chrome|Safari|Firefox|Trident|Opera)/" browser;
     }
 
     server {
@@ -98,7 +121,7 @@ http {
             return 403;
         }
 
-        access_log /opt/overpass/log/nginx_access.log combined_timed;
+        access_log /opt/overpass/log/nginx_access.log combined_timed buffer=64k flush=5s;
         error_log  /opt/overpass/log/nginx_error.log;
 
         location / {
