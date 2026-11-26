@@ -19,7 +19,12 @@ services:
     restart: "no"
 
   api:
-    build: ./
+    build:
+      context: ./
+      args:
+        # nginx files copied into the image, relative to this directory
+        NGINX_TEMPLATE: nginx/nginx.conf.template
+        NGINX_USER_AGENTS_DIR: nginx/user-agents
     environment:
       OVERPASS_DB_DIR: /opt/overpass/db
       EXTRACT_FILE_URL: https://download.openstreetmap.fr/extracts/europe/italy-latest.osm.pbf
@@ -33,6 +38,11 @@ services:
       - "80:8080"
     volumes:
       - database:/opt/overpass/db
+      # Live-editable User-Agent whitelist, overrides the copy baked in the image.
+      # Mounted as a directory (not a single file) so editors that replace the
+      # file on save don't leave the container on a stale copy.
+      # Apply changes with: docker compose exec api sh -c 'nginx -t && nginx -s reload'
+      - ./nginx/user-agents:/etc/nginx/user-agents:ro
 
 volumes:
   database:

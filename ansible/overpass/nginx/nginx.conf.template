@@ -1,0 +1,149 @@
+worker_processes auto;
+pid /opt/overpass/run/nginx.pid;
+error_log /opt/overpass/log/nginx_error.log;
+include /etc/nginx/modules-enabled/*.conf;
+
+events {
+    worker_connections 768;
+}
+
+http {
+    sendfile on;
+    tcp_nopush on;
+    types_hash_max_size 2048;
+
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    # Standard "combined" format with $request_time and $upstream_response_time
+    # appended (read by the osm_nginx_access munin plugin). The timing fields are at the
+    # end so anything parsing the combined prefix is unaffected;
+    # $upstream_response_time is "-" for requests that never reach the upstream.
+    log_format combined_timed '$remote_addr - $remote_user [$time_local] '
+                              '"$request" $status $body_bytes_sent '
+                              '"$http_referer" "$http_user_agent" '
+                              '$request_time $upstream_response_time';
+
+    access_log /opt/overpass/log/nginx_access.log combined_timed;
+
+    client_body_temp_path /opt/overpass/tmp;
+    fastcgi_temp_path     /opt/overpass/tmp;
+    proxy_temp_path       /opt/overpass/tmp;
+    uwsgi_temp_path       /opt/overpass/tmp;
+    scgi_temp_path        /opt/overpass/tmp;
+
+    gzip on;
+
+    limit_conn_zone $server_name zone=overpass:10m;
+    ${NGINX_LIMIT_CONN_ZONE}
+    limit_conn_status 429;
+
+    ${NGINX_LIMIT_REQ_ZONE}
+    limit_req_status 429;
+
+    # ------------------------------------------------------------------------
+    # Access control (osmit-deploy-overpass customization)
+    #
+    # 1. The User-Agent must be either a known browser or explicitly
+    #    whitelisted in /etc/nginx/user-agents/*.conf, otherwise 403.
+    # 2. Browsers must also send a Referer, otherwise 403.
+    # 3. Whitelisted (non-browser) agents skip the Referer check.
+    # Requests from inside the container (loopback) are always allowed so the
+    # image's own healthcheck (curl http://localhost:8080/api/status) works.
+    # ------------------------------------------------------------------------
+
+    # Classify the client from its User-Agent. Regexes are tested in the order
+    # they appear and the first match wins, so the user whitelist (included
+    # first) takes precedence over the generic browser detection below.
+    # An empty or unknown User-Agent falls through to "deny".
+    #
+    # The whitelist directory is baked into the image with defaults and is
+    # bind-mounted by compose.yml, so it can be edited live: after a change run
+    #   docker compose exec api sh -c 'nginx -t && nginx -s reload'
+    map $http_user_agent $client_class {
+        default deny;
+
+        include /etc/nginx/user-agents/*.conf;
+
+        # Loose detection of major browsers via their product tokens:
+        # Firefox, Chrome/Chromium (and iOS variants), Safari, Edge (all
+        # variants), Opera, Samsung Internet, Vivaldi, Yandex, legacy IE.
+        "~*(firefox|fxios|chrome|chromium|crios|safari|edg|edge|edga|edgios|opr|opera|samsungbrowser|vivaldi|yabrowser)/" browser;
+        "~*(trident/|msie )" browser;
+    }
+
+    geo $is_loopback {
+        default      0;
+        127.0.0.1/32 1;
+        ::1/128      1;
+    }
+
+    # Final decision, key is "<loopback>:<class>:<referer>".
+    map "$is_loopback:$client_class:$http_referer" $deny_request {
+        default          1;
+        "~^1:"           0; # in-container request (healthcheck)
+        "~^0:allowed:"   0; # whitelisted agent, Referer not required
+        "~^0:browser:.+" 0; # browser with a non-empty Referer
+    }
+
+    server {
+        server_name overpass;
+        listen 8080;
+
+        error_page 403 @error_403;
+        error_page 429 @error_429;
+        error_page 504 @error_504;
+
+        if ($deny_request) {
+            return 403;
+        }
+
+        access_log /opt/overpass/log/nginx_access.log combined_timed;
+        error_log  /opt/overpass/log/nginx_error.log;
+
+        location / {
+            root /opt/overpass/static;
+            try_files $uri $uri/ =404;
+            add_header Cache-Control "public, max-age=300";
+        }
+
+        location ~ ^/api/(.*)$ {
+            limit_conn overpass ${NGINX_MAX_CONN};
+            ${NGINX_LIMIT_CONN_CLIENT}
+            ${NGINX_LIMIT_REQ_CLIENT}
+
+            fastcgi_pass unix:/opt/overpass/run/fcgiwrap.socket;
+            fastcgi_param SCRIPT_FILENAME /opt/overpass/cgi-bin/$1;
+            fastcgi_read_timeout ${NGINX_FASTCGI_TIMEOUT}s;
+            send_timeout 60s;
+            include fastcgi_params;
+        }
+
+        location /nginx-status {
+            stub_status;
+            allow 127.0.0.1;
+            deny all;
+        }
+
+        location /liveness {
+            add_header Content-Type text/plain;
+            expires -1;
+            return 200 'OK';
+        }
+
+        location @error_403 {
+            default_type text/plain;
+            return 403 "# 403 Forbidden\n\nThis Overpass API server only accepts requests from web browsers that send\na Referer header, or from explicitly allowed User-Agents.\n";
+        }
+
+        location @error_429 {
+            default_type text/plain;
+            return 429 "# 429 Too Many Requests\n\nThis Overpass API server is currently at capacity. All query workers are busy\nand the request queue is full.\n\n## What to do\n\nRetry your request using exponential backoff: wait a short interval, then retry.\nIf the request fails again, double the wait time and retry again.\n\n## For heavy or automated use\n\nThis public endpoint is intended for browser-based and human-operated tools.\nFor automated or high-volume use, run a local Overpass API instance:\n\nhttps://github.com/b1tw153/Overpass-API/blob/main/README.md\n";
+        }
+
+        location @error_504 {
+            default_type text/plain;
+            return 504 "# 504 Gateway Timeout\n\nThis Overpass API server enforces a maximum response time of ${NGINX_FASTCGI_TIMEOUT}\nseconds. Your request did not complete within that limit.\n\n## What to do\n\nIf your query set [timeout:X] to a value greater than ${NGINX_FASTCGI_TIMEOUT},\nsimplify your query and reduce the timeout.\n\nOtherwise the server was likely busy when your request arrived. Retry using\nexponential backoff: wait a short interval, then retry. If the request fails\nagain, double the wait time and retry again.\n\n## For heavy or automated use\n\nThis public endpoint is intended for browser-based and human-operated tools.\nFor automated or high-volume use, run a local Overpass API instance:\n\nhttps://github.com/b1tw153/Overpass-API/blob/main/README.md\n";
+        }
+    }
+}
